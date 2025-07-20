@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Maze Game</title>
+  <style>
+    /* Basic reset and body styling */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      background: #111;
+      overflow: hidden;
+      height: 100%; /* Ensure body takes full height */
+      width: 100%; /* Ensure body takes full width */
+    }
+    canvas {
+      display: block;
+      background: #111;
+    }
+
+    /* Game Over Screen Styling */
+    #gameOverScreen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8); /* Semi-transparent black overlay */
+      color: white;
+      display: flex; /* Use flexbox for centering content */
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      font-family: 'Arial', sans-serif; /* A common sans-serif font */
+      font-size: 3em; /* Large font size for the message */
+      text-align: center;
+      display: none; /* Hidden by default, shown when game is over */
+      z-index: 100; /* Ensure it's on top of the canvas */
+    }
+    #gameOverScreen p {
+        margin-bottom: 20px; /* Space between text and button */
+    }
+    #gameOverScreen button {
+      margin-top: 20px;
+      padding: 15px 30px; /* Larger padding for a more clickable button */
+      font-size: 0.6em; /* Relative to parent font size */
+      cursor: pointer;
+      background: limegreen; /* A vibrant green */
+      color: #111; /* Dark text on button */
+      border: none;
+      border-radius: 8px; /* Slightly more rounded corners */
+      transition: background 0.3s ease; /* Smooth transition on hover */
+    }
+    #gameOverScreen button:hover {
+        background: #00e600; /* Slightly brighter green on hover */
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="gameOverScreen">
+  <p>Congratulations! You finished the maze!</p>
+  <button id="restartButton">Play Again</button>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+// Set canvas dimensions to fill the window
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const cellSize = 40;
+const wallThickness = 5; // This is the drawn thickness of the walls
+const cols = 20; // Number of columns in the maze
+const rows = 20; // Number of rows in the maze
+let maze = []; // Stores the maze grid structure
+
+// Player properties
+// Player's position (using floats for smooth movement, starts in center of the blue start square)
+let player = { x: 0.375, y: 0.375 };
+// Player radius in pixels. Adjusted to be smaller than the visual corridor.
+const playerRadius = (cellSize - wallThickness * 2) / 3; // Ensures it fits in the clear path. You can adjust the '/3' for more or less clearance.
+const playerSpeed = 0.15; // Speed of player movement per frame (still in cell units)
+
+// Game state variables
+let keysPressed = {}; // Object to track currently pressed keys for smooth movement
+let gameOver = false; // Flag to indicate if the game is over (maze completed)
+
+// Get references to game over screen elements
+const gameOverScreen = document.getElementById("gameOverScreen");
+const restartButton = document.getElementById("restartButton");
+
+// Maze generation using DFS backtracking algorithm
+function generateMaze() {
+  maze = Array.from({ length: rows }, (_, y) =>
+    Array.from({ length: cols }, (_, x) => ({
+      x, y,
+      top: true, right: true, bottom: true, left: true, // Walls for each side
+      visited: false // For maze generation
+    }))
+  );
+
+  const stack = [];
+  let current = maze[0][0]; // Start generation from top-left cell
+  current.visited = true;
+
+  // Directions arrays (Up, Right, Down, Left)
+  const dx = [0, 1, 0, -1];
+  const dy = [-1, 0, 1, 0];
+  const dirMap = ["top", "right", "bottom", "left"]; // Map direction index to wall property
+  const opposite = { top: "bottom", right: "left", bottom: "top", left: "right" }; // Opposite wall for removing
+
+  while (true) {
+    let neighbors = [];
+    // Find unvisited neighbors
+    for (let d = 0; d < 4; d++) {
+      let nx = current.x + dx[d];
+      let ny = current.y + dy[d];
+      if (
+        ny >= 0 && ny < rows &&
+        nx >= 0 && nx < cols &&
+        !maze[ny][nx].visited
+      ) {
+        neighbors.push({ cell: maze[ny][nx], dir: dirMap[d] });
+      }
+    }
+
+    if (neighbors.length > 0) {
+      // If neighbors exist, push current to stack and move to a random neighbor
+      stack.push(current);
+      const { cell: next, dir } = neighbors[Math.floor(Math.random() * neighbors.length)];
+
+      // Remove walls between current and next cell
+      current[dir] = false;
+      next[opposite[dir]] = false;
+
+      next.visited = true;
+      current = next;
+    } else if (stack.length > 0) {
+      // If no unvisited neighbors, backtrack
+      current = stack.pop();
+    } else {
+      // If stack is empty, maze generation is complete
+      break;
+    }
+  }
+
+  // Optional: Ensure start and end cells have clear paths to the outside
+  maze[0][0].left = false; // Open entrance from left
+  maze[rows - 1][cols - 1].right = false; // Open exit to right
+}
+
+// Draws the maze, player, start, and end points
+function drawMaze() {
+  ctx.fillStyle = "#111"; // Background color
+  ctx.fillRect(0, 0, canvas.width, canvas.height); // Clear canvas
+
+  // Calculate offset to center the maze view around the player
+  // Player.x and player.y are cell-based coordinates, need to convert to pixels
+  const offsetX = canvas.width / 2 - (player.x * cellSize + cellSize / 2);
+  const offsetY = canvas.height / 2 - (player.y * cellSize + cellSize / 2);
+
+  ctx.lineWidth = wallThickness;
+  ctx.strokeStyle = "#fff"; // Wall color
+
+  // Draw each cell's walls
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const cell = maze[y][x];
+      const px = x * cellSize + offsetX; // Pixel X position of cell
+      const py = y * cellSize + offsetY; // Pixel Y position of cell
+
+      ctx.beginPath();
+      if (cell.top) // If top wall exists
+        ctx.moveTo(px, py), ctx.lineTo(px + cellSize, py);
+      if (cell.right) // If right wall exists
+        ctx.moveTo(px + cellSize, py), ctx.lineTo(px + cellSize, py + cellSize);
+      if (cell.bottom) // If bottom wall exists
+        ctx.moveTo(px + cellSize, py + cellSize), ctx.lineTo(px, py + cellSize);
+      if (cell.left) // If left wall exists
+        ctx.moveTo(px, py + cellSize), ctx.lineTo(px, py);
+      ctx.stroke(); // Draw the accumulated paths
+    }
+  }
+
+  // Draw player
+  ctx.fillStyle = "lime";
+  ctx.beginPath();
+  ctx.arc(
+    player.x * cellSize + offsetX + cellSize / 2, // Center X of player in pixels
+    player.y * cellSize + offsetY + cellSize / 2, // Center Y of player in pixels
+    playerRadius,
+    0, Math.PI * 2
+  );
+  ctx.fill();
+
+  // Draw start (blue square)
+  ctx.fillStyle = "blue";
+  // The blue square is at offsetX + 5, offsetY + 5, with size cellSize / 2
+  ctx.fillRect(offsetX + 5, offsetY + 5, cellSize / 2, cellSize / 2);
+
+  // Draw end (red square)
+  ctx.fillStyle = "red";
+  ctx.fillRect(
+    offsetX + (cols - 1) * cellSize + cellSize / 2 - 5, // Position in end cell
+    offsetY + (rows - 1) * cellSize + cellSize / 2 - 5,
+    cellSize / 2, cellSize / 2
+  );
+}
+
+// Helper function to check for wall collision
+// All coordinates (px, py, wallX1, etc.) are now in PIXELS
+function checkWallCollision(playerPixelX, playerPixelY, playerPixelRadius, wallPixelX1, wallPixelY1, wallPixelX2, wallPixelY2, horizontalWall) {
+    const nearestX = Math.max(wallPixelX1, Math.min(playerPixelX, wallPixelX2));
+    const nearestY = Math.max(wallPixelY1, Math.min(playerPixelY, wallPixelY2));
+
+    const dx = playerPixelX - nearestX;
+    const dy = playerPixelY - nearestY;
+    const distanceSq = (dx * dx) + (dy * dy);
+
+    if (distanceSq < (playerPixelRadius * playerPixelRadius)) {
+        const distance = Math.sqrt(distanceSq);
+        const overlap = playerPixelRadius - distance;
+
+        let nx, ny;
+        if (distance === 0) {
+            // Player is exactly on the wall segment. Push in a sensible default direction.
+            if (horizontalWall) {
+                nx = 0;
+                ny = playerPixelY > wallPixelY1 ? 1 : -1;
+            } else {
+                nx = playerPixelX > wallPixelX1 ? 1 : -1;
+                ny = 0;
+            }
+        } else {
+            nx = dx / distance;
+            ny = dy / distance;
+        }
+        return { hit: true, overlap: overlap, nx: nx, ny: ny };
+    }
+    return { hit: false };
+}
+
+
+// Updates the player's position based on pressed keys and handles collisions
+function updatePlayerPosition() {
+    if (gameOver) return;
+
+    let moveX = 0;
+    let moveY = 0;
+
+    // Calculate desired movement
+    if (keysPressed["w"] || keysPressed["ArrowUp"]) {
+        moveY -= playerSpeed;
+    }
+    if (keysPressed["s"] || keysPressed["ArrowDown"]) {
+        moveY += playerSpeed;
+    }
+    if (keysPressed["a"] || keysPressed["ArrowLeft"]) {
+        moveX -= playerSpeed;
+    }
+    if (keysPressed["d"] || keysPressed["ArrowRight"]) {
+        moveX += playerSpeed;
+    }
+
+    // Convert player position and speed to pixels for collision calculations
+    let playerPixelX = player.x * cellSize + cellSize / 2;
+    let playerPixelY = player.y * cellSize + cellSize / 2;
+    const playerPixelSpeedX = moveX * cellSize;
+    const playerPixelSpeedY = moveY * cellSize;
+
+    const currentCellX = Math.floor(player.x);
+    const currentCellY = Math.floor(player.y);
+
+    // Iterate through current cell and adjacent cells to check for walls
+    const checkCells = [];
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const cellX = currentCellX + dx;
+            const cellY = currentCellY + dy;
+            if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows) {
+                checkCells.push(maze[cellY][cellX]);
+            }
+        }
+    }
+
+    // --- Apply X movement and resolve X collisions ---
+    let newPlayerPixelX = playerPixelX + playerPixelSpeedX;
+    let tempPlayerPixelX = newPlayerPixelX;
+
+    for (const cell of checkCells) {
+        // Calculate the actual pixel coordinates of the INNER edge of the walls
+        const wallLeftPixel = cell.x * cellSize + wallThickness / 2;
+        const wallRightPixel = (cell.x + 1) * cellSize - wallThickness / 2;
+        const wallTopPixel = cell.y * cellSize + wallThickness / 2;
+        const wallBottomPixel = (cell.y + 1) * cellSize - wallThickness / 2;
+
+        if (cell.left) {
+             const collision = checkWallCollision(tempPlayerPixelX, playerPixelY, playerRadius, wallLeftPixel, wallTopPixel, wallLeftPixel, wallBottomPixel, false);
+             if (collision.hit) {
+                 tempPlayerPixelX += collision.nx * collision.overlap;
+             }
+        }
+        if (cell.right) {
+             const collision = checkWallCollision(tempPlayerPixelX, playerPixelY, playerRadius, wallRightPixel, wallTopPixel, wallRightPixel, wallBottomPixel, false);
+             if (collision.hit) {
+                 tempPlayerPixelX += collision.nx * collision.overlap;
+             }
+        }
+    }
+    playerPixelX = tempPlayerPixelX;
+
+
+    // --- Apply Y movement and resolve Y collisions ---
+    let newPlayerPixelY = playerPixelY + playerPixelSpeedY;
+    let tempPlayerPixelY = newPlayerPixelY; // Use potentially updated X
+
+    for (const cell of checkCells) {
+        // Calculate the actual pixel coordinates of the INNER edge of the walls
+        const wallLeftPixel = cell.x * cellSize + wallThickness / 2;
+        const wallRightPixel = (cell.x + 1) * cellSize - wallThickness / 2;
+        const wallTopPixel = cell.y * cellSize + wallThickness / 2;
+        const wallBottomPixel = (cell.y + 1) * cellSize - wallThickness / 2;
+
+        if (cell.top) {
+            const collision = checkWallCollision(playerPixelX, tempPlayerPixelY, playerRadius, wallLeftPixel, wallTopPixel, wallRightPixel, wallTopPixel, true);
+            if (collision.hit) {
+                tempPlayerPixelY += collision.ny * collision.overlap;
+            }
+        }
+        if (cell.bottom) {
+            const collision = checkWallCollision(playerPixelX, tempPlayerPixelY, playerRadius, wallLeftPixel, wallBottomPixel, wallRightPixel, wallBottomPixel, true);
+            if (collision.hit) {
+                tempPlayerPixelY += collision.ny * collision.overlap;
+            }
+        }
+    }
+    playerPixelY = tempPlayerPixelY;
+
+
+    // Convert player pixel position back to cell units
+    player.x = (playerPixelX - cellSize / 2) / cellSize;
+    player.y = (playerPixelY - cellSize / 2) / cellSize;
+
+    // Final clamping to ensure player stays strictly within maze boundaries
+    // This clamping needs to consider playerRadius in pixel space
+    const minPixelX = playerRadius;
+    const maxPixelX = cols * cellSize - playerRadius;
+    const minPixelY = playerRadius;
+    const maxPixelY = rows * cellSize - playerRadius;
+
+    playerPixelX = Math.max(minPixelX, Math.min(maxPixelX, playerPixelX));
+    playerPixelY = Math.max(minPixelY, Math.min(maxPixelY, playerPixelY));
+
+    // Convert back to cell units after clamping
+    player.x = (playerPixelX - cellSize / 2) / cellSize;
+    player.y = (playerPixelY - cellSize / 2) / cellSize;
+
+    // Check for game completion: Player is within the target area of the end cell
+    const endCellX = cols - 1;
+    const endCellY = rows - 1;
+    // Check if the center of the player is within the end cell
+    if (
+        player.x >= endCellX && player.x < endCellX + 1 &&
+        player.y >= endCellY && player.y < endCellY + 1
+    ) {
+        showGameOverScreen();
+    }
+}
+
+// Main game loop
+function gameLoop() {
+  if (!gameOver) { // Only update and draw if the game is not over
+    updatePlayerPosition();
+    drawMaze();
+  }
+  requestAnimationFrame(gameLoop); // Request next frame
+}
+
+// Shows the game over screen
+function showGameOverScreen() {
+  gameOver = true; // Set game over flag to true
+  gameOverScreen.style.display = "flex"; // Make the screen visible
+}
+
+// Hides the game over screen
+function hideGameOverScreen() {
+  gameOver = false; // Reset game over flag
+  gameOverScreen.style.display = "none"; // Hide the screen
+}
+
+// Resets the game to a new state
+function resetGame() {
+  // Reset player to the calculated center of the blue start square
+  player = { x: 0.375, y: 0.375 };
+  generateMaze(); // Generate a brand new maze
+  hideGameOverScreen(); // Hide the game over screen
+}
+
+// Event Listeners for smooth player movement
+document.addEventListener("keydown", (e) => {
+  // Store which keys are currently pressed
+  if (e.key === "w" || e.key === "ArrowUp") keysPressed["w"] = true;
+  if (e.key === "s" || e.key === "ArrowDown") keysPressed["s"] = true;
+  if (e.key === "a" || e.key === "ArrowLeft") keysPressed["a"] = true;
+  if (e.key === "d" || e.key === "ArrowRight") keysPressed["d"] = true;
+});
+
+document.addEventListener("keyup", (e) => {
+  // Store which keys are no longer pressed
+  if (e.key === "w" || e.key === "ArrowUp") keysPressed["w"] = false;
+  if (e.key === "s" || e.key === "ArrowDown") keysPressed["s"] = false;
+  if (e.key === "a" || e.key === "ArrowLeft") keysPressed["a"] = false;
+  if (e.key === "d" || e.key === "ArrowRight") keysPressed["d"] = false;
+});
+
+// Event listener for the restart button
+restartButton.addEventListener("click", resetGame);
+
+// Initial setup
+generateMaze(); // Generate the first maze
+gameLoop(); // Start the game animation loop
+</script>
+</body>
+</html>
