@@ -77,15 +77,16 @@ canvas.height = window.innerHeight;
 
 const cellSize = 40;
 const wallThickness = 5; // This is the drawn thickness of the walls
-const cols = 20; // Number of columns in the maze
-const rows = 20; // Number of rows in the maze
+const cols = 40; // Number of columns in the maze
+const rows = 40; // Number of rows in the maze
 let maze = []; // Stores the maze grid structure
 
 // Player properties
-// Player's position (using floats for smooth movement, starts in center of the blue start square)
-let player = { x: 0.375, y: 0.375 };
+let player = { x: 0.375, y: 0.375 }; // Player's position (starts in center of the blue start square)
 // Player radius in pixels. Adjusted to be smaller than the visual corridor.
-const playerRadius = (cellSize - wallThickness * 2) / 3; // Ensures it fits in the clear path. You can adjust the '/3' for more or less clearance.
+// The effective "passable" space for the player is cellSize - wallThickness.
+// Player radius should be less than half of this passable space.
+const playerRadius = (cellSize - wallThickness) / 2.5; // Adjusted for a bit more clearance
 const playerSpeed = 0.15; // Speed of player movement per frame (still in cell units)
 
 // Game state variables
@@ -162,7 +163,6 @@ function drawMaze() {
   ctx.fillRect(0, 0, canvas.width, canvas.height); // Clear canvas
 
   // Calculate offset to center the maze view around the player
-  // Player.x and player.y are cell-based coordinates, need to convert to pixels
   const offsetX = canvas.width / 2 - (player.x * cellSize + cellSize / 2);
   const offsetY = canvas.height / 2 - (player.y * cellSize + cellSize / 2);
 
@@ -177,6 +177,9 @@ function drawMaze() {
       const py = y * cellSize + offsetY; // Pixel Y position of cell
 
       ctx.beginPath();
+      // Walls are drawn centered on the boundary between cells.
+      // A wall of wallThickness occupies wallThickness/2 on either side of the boundary.
+      // So, for collision purposes, the inner edge of a wall is important.
       if (cell.top) // If top wall exists
         ctx.moveTo(px, py), ctx.lineTo(px + cellSize, py);
       if (cell.right) // If right wall exists
@@ -202,7 +205,6 @@ function drawMaze() {
 
   // Draw start (blue square)
   ctx.fillStyle = "blue";
-  // The blue square is at offsetX + 5, offsetY + 5, with size cellSize / 2
   ctx.fillRect(offsetX + 5, offsetY + 5, cellSize / 2, cellSize / 2);
 
   // Draw end (red square)
@@ -215,23 +217,34 @@ function drawMaze() {
 }
 
 // Helper function to check for wall collision
-// All coordinates (px, py, wallX1, etc.) are now in PIXELS
-function checkWallCollision(playerPixelX, playerPixelY, playerPixelRadius, wallPixelX1, wallPixelY1, wallPixelX2, wallPixelY2, horizontalWall) {
-    const nearestX = Math.max(wallPixelX1, Math.min(playerPixelX, wallPixelX2));
-    const nearestY = Math.max(wallPixelY1, Math.min(playerPixelY, wallPixelY2));
+// This function takes pixel coordinates for player and wall segments.
+// Returns { hit: true, overlap: number, nx: number, ny: number } or { hit: false }
+function checkWallCollision(playerPixelX, playerPixelY, playerPixelRadius, wallPixelX1, wallPixelY1, wallPixelX2, wallPixelY2, isHorizontalWall) {
+    // Find the closest point on the wall line segment to the player's center
+    const lenSq = (wallPixelX2 - wallPixelX1) * (wallPixelX2 - wallPixelX1) + (wallPixelY2 - wallPixelY1) * (wallPixelY2 - wallPixelY1);
+    let t = 0;
+    if (lenSq !== 0) { // Avoid division by zero for a point wall (which shouldn't happen here)
+        t = ((playerPixelX - wallPixelX1) * (wallPixelX2 - wallPixelX1) + (playerPixelY - wallPixelY1) * (wallPixelY2 - wallPixelY1)) / lenSq;
+        t = Math.max(0, Math.min(1, t)); // Clamp t between 0 and 1 to stay on the segment
+    }
+
+    const nearestX = wallPixelX1 + t * (wallPixelX2 - wallPixelX1);
+    const nearestY = wallPixelY1 + t * (wallPixelY2 - wallPixelY1);
 
     const dx = playerPixelX - nearestX;
     const dy = playerPixelY - nearestY;
     const distanceSq = (dx * dx) + (dy * dy);
 
+    // Collision occurs if distance squared is less than radius squared
     if (distanceSq < (playerPixelRadius * playerPixelRadius)) {
         const distance = Math.sqrt(distanceSq);
         const overlap = playerPixelRadius - distance;
 
         let nx, ny;
         if (distance === 0) {
-            // Player is exactly on the wall segment. Push in a sensible default direction.
-            if (horizontalWall) {
+            // Player is exactly on the wall segment (unlikely with float math).
+            // Push it in a sensible default direction.
+            if (isHorizontalWall) {
                 nx = 0;
                 ny = playerPixelY > wallPixelY1 ? 1 : -1;
             } else {
@@ -239,8 +252,8 @@ function checkWallCollision(playerPixelX, playerPixelY, playerPixelRadius, wallP
                 ny = 0;
             }
         } else {
-            nx = dx / distance;
-            ny = dy / distance;
+            nx = dx / distance; // Normalized collision normal X
+            ny = dy / distance; // Normalized collision normal Y
         }
         return { hit: true, overlap: overlap, nx: nx, ny: ny };
     }
@@ -255,7 +268,7 @@ function updatePlayerPosition() {
     let moveX = 0;
     let moveY = 0;
 
-    // Calculate desired movement
+    // Calculate desired movement in cell units
     if (keysPressed["w"] || keysPressed["ArrowUp"]) {
         moveY -= playerSpeed;
     }
@@ -272,13 +285,16 @@ function updatePlayerPosition() {
     // Convert player position and speed to pixels for collision calculations
     let playerPixelX = player.x * cellSize + cellSize / 2;
     let playerPixelY = player.y * cellSize + cellSize / 2;
-    const playerPixelSpeedX = moveX * cellSize;
-    const playerPixelSpeedY = moveY * cellSize;
+    const playerPixelMoveX = moveX * cellSize;
+    const playerPixelMoveY = moveY * cellSize;
 
+    // Proposed new position
+    let newPlayerPixelX = playerPixelX + playerPixelMoveX;
+    let newPlayerPixelY = playerPixelY + playerPixelMoveY;
+
+    // Determine cells to check: current cell and 8 surrounding cells
     const currentCellX = Math.floor(player.x);
     const currentCellY = Math.floor(player.y);
-
-    // Iterate through current cell and adjacent cells to check for walls
     const checkCells = [];
     for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -290,77 +306,82 @@ function updatePlayerPosition() {
         }
     }
 
-    // --- Apply X movement and resolve X collisions ---
-    let newPlayerPixelX = playerPixelX + playerPixelSpeedX;
-    let tempPlayerPixelX = newPlayerPixelX;
+    // --- Collision Resolution (Iterative or Multiple Passes) ---
+    // A simple, effective way to prevent tunneling for continuous movement is to
+    // perform multiple sub-steps or iterative collision resolution.
+    // For this case, we'll iterate through all walls and apply corrections.
+    // Order of operations for X and Y can matter. Let's try to resolve X then Y.
 
+    // Store potential position after applying full movement
+    let resolvedX = newPlayerPixelX;
+    let resolvedY = newPlayerPixelY;
+
+    // Pass 1: Resolve X-axis collisions
     for (const cell of checkCells) {
-        // Calculate the actual pixel coordinates of the INNER edge of the walls
-        const wallLeftPixel = cell.x * cellSize + wallThickness / 2;
-        const wallRightPixel = (cell.x + 1) * cellSize - wallThickness / 2;
-        const wallTopPixel = cell.y * cellSize + wallThickness / 2;
-        const wallBottomPixel = (cell.y + 1) * cellSize - wallThickness / 2;
+        // Pixel coordinates of the inner edge of the walls (where the player can collide)
+        const wallLeftInner = cell.x * cellSize + wallThickness / 2;
+        const wallRightInner = (cell.x + 1) * cellSize - wallThickness / 2;
+        const wallTopInner = cell.y * cellSize + wallThickness / 2;
+        const wallBottomInner = (cell.y + 1) * cellSize - wallThickness / 2;
 
+        // Check left wall
         if (cell.left) {
-             const collision = checkWallCollision(tempPlayerPixelX, playerPixelY, playerRadius, wallLeftPixel, wallTopPixel, wallLeftPixel, wallBottomPixel, false);
-             if (collision.hit) {
-                 tempPlayerPixelX += collision.nx * collision.overlap;
-             }
+            const collision = checkWallCollision(resolvedX, playerPixelY, playerRadius, wallLeftInner, wallTopInner, wallLeftInner, wallBottomInner, false);
+            if (collision.hit) {
+                resolvedX += collision.nx * collision.overlap;
+            }
         }
+        // Check right wall
         if (cell.right) {
-             const collision = checkWallCollision(tempPlayerPixelX, playerPixelY, playerRadius, wallRightPixel, wallTopPixel, wallRightPixel, wallBottomPixel, false);
-             if (collision.hit) {
-                 tempPlayerPixelX += collision.nx * collision.overlap;
-             }
+            const collision = checkWallCollision(resolvedX, playerPixelY, playerRadius, wallRightInner, wallTopInner, wallRightInner, wallBottomInner, false);
+            if (collision.hit) {
+                resolvedX += collision.nx * collision.overlap;
+            }
         }
     }
-    playerPixelX = tempPlayerPixelX;
+    // Update player's X position after resolving all X-axis pushes
+    playerPixelX = resolvedX;
 
-
-    // --- Apply Y movement and resolve Y collisions ---
-    let newPlayerPixelY = playerPixelY + playerPixelSpeedY;
-    let tempPlayerPixelY = newPlayerPixelY; // Use potentially updated X
-
+    // Pass 2: Resolve Y-axis collisions using the potentially updated X
     for (const cell of checkCells) {
-        // Calculate the actual pixel coordinates of the INNER edge of the walls
-        const wallLeftPixel = cell.x * cellSize + wallThickness / 2;
-        const wallRightPixel = (cell.x + 1) * cellSize - wallThickness / 2;
-        const wallTopPixel = cell.y * cellSize + wallThickness / 2;
-        const wallBottomPixel = (cell.y + 1) * cellSize - wallThickness / 2;
+        const wallLeftInner = cell.x * cellSize + wallThickness / 2;
+        const wallRightInner = (cell.x + 1) * cellSize - wallThickness / 2;
+        const wallTopInner = cell.y * cellSize + wallThickness / 2;
+        const wallBottomInner = (cell.y + 1) * cellSize - wallThickness / 2;
 
+        // Check top wall
         if (cell.top) {
-            const collision = checkWallCollision(playerPixelX, tempPlayerPixelY, playerRadius, wallLeftPixel, wallTopPixel, wallRightPixel, wallTopPixel, true);
+            const collision = checkWallCollision(playerPixelX, resolvedY, playerRadius, wallLeftInner, wallTopInner, wallRightInner, wallTopInner, true);
             if (collision.hit) {
-                tempPlayerPixelY += collision.ny * collision.overlap;
+                resolvedY += collision.ny * collision.overlap;
             }
         }
+        // Check bottom wall
         if (cell.bottom) {
-            const collision = checkWallCollision(playerPixelX, tempPlayerPixelY, playerRadius, wallLeftPixel, wallBottomPixel, wallRightPixel, wallBottomPixel, true);
+            const collision = checkWallCollision(playerPixelX, resolvedY, playerRadius, wallLeftInner, wallBottomInner, wallRightInner, wallBottomInner, true);
             if (collision.hit) {
-                tempPlayerPixelY += collision.ny * collision.overlap;
+                resolvedY += collision.ny * collision.overlap;
             }
         }
     }
-    playerPixelY = tempPlayerPixelY;
+    // Update player's Y position after resolving all Y-axis pushes
+    playerPixelY = resolvedY;
 
-
-    // Convert player pixel position back to cell units
-    player.x = (playerPixelX - cellSize / 2) / cellSize;
-    player.y = (playerPixelY - cellSize / 2) / cellSize;
-
-    // Final clamping to ensure player stays strictly within maze boundaries
-    // This clamping needs to consider playerRadius in pixel space
-    const minPixelX = playerRadius;
-    const maxPixelX = cols * cellSize - playerRadius;
-    const minPixelY = playerRadius;
-    const maxPixelY = rows * cellSize - playerRadius;
+    // Clamping to maze boundaries (essential after collision resolution)
+    // Ensure player cannot go outside the outer walls of the maze.
+    // The player's center must be at least 'playerRadius' from the edge.
+    const minPixelX = playerRadius + wallThickness / 2; // Offset by half wall thickness
+    const maxPixelX = cols * cellSize - playerRadius - wallThickness / 2;
+    const minPixelY = playerRadius + wallThickness / 2;
+    const maxPixelY = rows * cellSize - playerRadius - wallThickness / 2;
 
     playerPixelX = Math.max(minPixelX, Math.min(maxPixelX, playerPixelX));
     playerPixelY = Math.max(minPixelY, Math.min(maxPixelY, playerPixelY));
 
-    // Convert back to cell units after clamping
+    // Convert final pixel position back to cell units
     player.x = (playerPixelX - cellSize / 2) / cellSize;
     player.y = (playerPixelY - cellSize / 2) / cellSize;
+
 
     // Check for game completion: Player is within the target area of the end cell
     const endCellX = cols - 1;
